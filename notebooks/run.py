@@ -6,7 +6,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.data    import load_prices
 from src.factors import build_factor_table
 from src.model   import walk_forward, save_predictions, load_predictions
-from src.evaluate import compute_rank_ic, backtest, compute_performance
+from src.evaluate import compute_rank_ic, backtest, compute_performance, apply_transaction_costs
 import os
 
 REBUILD_DATA    = False   # set True to re-download prices
@@ -49,5 +49,11 @@ if __name__ == "__main__":
     print("step 4: evaluation")
     print("=" * 50)
     monthly_ic = compute_rank_ic(predictions)
-    returns_df = backtest(predictions, top_n=10)
-    metrics    = compute_performance(returns_df)
+    returns_df = backtest(predictions, top_pct=0.10)
+    returns_df = apply_transaction_costs(returns_df, predictions, cost_per_trade=0.001)
+
+    print("\n--- GROSS PERFORMANCE ---")
+    metrics_gross = compute_performance(returns_df, net=False)
+
+    print("\n--- NET PERFORMANCE (after transaction costs) ---")
+    metrics_net = compute_performance(returns_df, net=True)

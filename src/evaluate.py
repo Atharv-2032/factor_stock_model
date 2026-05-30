@@ -32,7 +32,7 @@ def compute_rank_ic(predictions):
     return monthly_ic
 
 
-def backtest(predictions, top_n=10):
+def backtest(predictions, top_pct=0.10):
     """
     Simulate long-short portfolio.
     Long: top_n stocks by predicted score.
@@ -41,6 +41,9 @@ def backtest(predictions, top_n=10):
     monthly_returns = []
 
     for date, group in predictions.groupby("date"):
+        n = len(group)
+        top_n = max(1,int(n*top_pct))
+        
         if len(group) < top_n * 2:
             continue
 
@@ -52,18 +55,79 @@ def backtest(predictions, top_n=10):
             "date":        date,
             "long_return": long_portfolio["target"].mean(),
             "short_return": short_portfolio["target"].mean(),
-            "ls_return":   long_portfolio["target"].mean() - short_portfolio["target"].mean()
+            "ls_return":   long_portfolio["target"].mean() - short_portfolio["target"].mean(),
+            "n_stocks":     n,
+            "top_n":        top_n
         })
 
-    returns_df          = pd.DataFrame(monthly_returns).set_index("date")
+    returns_df = pd.DataFrame(monthly_returns).set_index("date")
+    print(f"average stocks per side: {returns_df['top_n'].mean():.0f}")
     return returns_df
 
+def apply_transaction_costs(returns_df, predictions, cost_per_trade=0.001):
+    """
+    Subtract realistic transaction costs from monthly returns.
 
-def compute_performance(returns_df):
+    We only pay costs on positions that CHANGE month to month (turnover).
+    Positions held from last month incur no cost.
+
+    cost_per_trade: one-way cost as a fraction (0.001 = 10 basis points)
+    We pay this twice per changed position (enter + exit).
+    """
+
+    returns_df = returns_df.copy()
+    dates = sorted(predictions["date"].unique())
+    costs = []
+
+    prev_long = set()
+    prev_short = set()
+
+    for date in dates:
+        if date not in returns_df.index:
+            costs.append(0)
+            continue
+
+        n = returns_df.loc[date, "n_stocks"]
+        top_n = returns_df.loc[date, "top_n"]
+
+        group = predictions[predictions["date"] == date]
+        group = group.sort_values("predicted", ascending=False)
+        curr_long = set(group.head(top_n)["ticker"])
+        curr_short = set(group.tail(top_n)["ticker"])
+
+        long_turnover = len(curr_long - prev_long)
+        short_turnover = len(curr_short - prev_short)
+        total_turnover = long_turnover + short_turnover
+        monthly_cost = total_turnover * 2 * cost_per_trade
+
+        total_positions = top_n * 2
+        cost_pct        = monthly_cost / total_positions if total_positions > 0 else 0
+
+        costs.append(cost_pct)
+        prev_long  = curr_long
+        prev_short = curr_short
+
+    returns_df["transaction_cost"] = costs
+    returns_df["ls_return_net"]    = returns_df["ls_return"] - returns_df["transaction_cost"]
+
+    avg_monthly_cost = returns_df["transaction_cost"].mean()
+    print(f"average monthly transaction cost: {avg_monthly_cost:.4%}")
+    print(f"annualized transaction cost drag: {avg_monthly_cost * 12:.4%}")
+
+    return returns_df
+
+def compute_performance(returns_df, net=True):
     """
     Compute overall and yearly performance metrics.
+    net=True uses transaction-cost-adjusted returns if available.
     """
-    ls             = returns_df["ls_return"]
+    if net and "ls_return_net" in returns_df.columns:
+        ls    = returns_df["ls_return_net"]
+        label = "net of transaction costs"
+    else:
+        ls    = returns_df["ls_return"]
+        label = "gross"
+
     n_months       = len(ls)
     overall_return = (1 + ls).prod() - 1
     ann_return     = (1 + overall_return) ** (12 / n_months) - 1
